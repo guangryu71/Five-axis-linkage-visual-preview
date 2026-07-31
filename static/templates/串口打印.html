@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>打印控制系统</title>
+    <style>
+        /* 原有样式基础上补充 */
+        .serial-control-panel {
+            padding: 20px;
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .progress-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .progress-box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .control-group {
+        border: 1px solid #ddd;
+        padding: 15px;
+        border-radius: 8px;
+        background: #f8f8f8;
+}
+
+        .input-row, .output-row, .param-row {
+    display: flex;
+    gap: 15px;
+    margin-top: 10px;
+}
+
+        .table-input {
+    width: 80px;
+    padding: 5px;
+    border: 1px solid #ccc;
+}
+
+        .motion-settings .param-row {
+    flex-direction: column;
+}
+
+        .button-group {
+            
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+        .action-btn {
+    padding: 8px 15px;
+    background: #008CBA;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+        .status-display {
+    grid-column: span 2;
+    background: #fff;
+    padding: 15px;
+    border: 1px solid #ddd;
+}
+
+        .status-indicator {
+    color: #008CBA;
+    font-weight: bold;
+}
+
+        .serial-actions {
+    grid-column: span 2;
+    text-align: center;
+    margin-top: 20px;
+}
+
+        .primary-btn {
+    padding: 10px 25px;
+    margin: 0 10px;
+    background: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+    </style>
+</head>
+<body>
+    <div class="content-area hidden" id="serialArea">
+        <div class="serial-control-panel">
+            <!-- 输入/输出表设置 -->
+            <div class="control-group">
+                <h4>输入点表数字：</h4>
+                <div class="input-row">
+                    <label>点表：<input type="number" class="table-input" id="pointInput" value="0"></label>
+                    <label>面表：<input type="number" class="table-input" id="faceInput" value="0"></label>
+                </div>
+            </div>
+    
+            <div class="control-group">
+                <h4>输出点表数字：</h4>
+                <div class="output-row">
+                    <div class="point-table">点表：<span id="point-count">0</span></div>
+                    <div class="face-table">面表：<span id="face-count">0</span></div>
+                </div>
+            </div>
+    
+            <!-- 运动参数设置 -->
+            <div class="control-group motion-settings">
+                <h4>开始</h4>
+                <div class="param-row">
+                    <label>固化加减速距离(cm):
+                        <input type="number" id="accelDistance" value="0">
+                    </label>
+                    <label>喷射加减速距离(cm):
+                        <input type="number" id="stepCount" value="0">
+                    </label>
+                    <label class="checkbox">
+                        <input type="checkbox" id="speedControl">匀速运动
+                    </label>
+                </div>
+            </div>
+    
+            <!-- 操作按钮组 -->
+            <div class="control-group button-group">
+                <button class="action-btn" id="blockBtn">喷射</button>
+                <button class="action-btn" id="blockBtn">分块</button>
+                <button class="action-btn" id="cureBtn">固化</button>
+                <button class="action-btn" id="serialCmdBtn">串口</button>
+            </div>
+    
+            <div class="control-group time-display">
+                <div class="time-row">
+                    <label>开始时间：
+                        <input type="datetime-local" id="endTime">
+                    </label>
+                    
+                </div>
+                <div class="time-row">
+                    <label>结束时间：
+                        <input type="datetime-local" id="endTime">
+                    </label><br>
+                    <span>用时/s<span id="timeUsed">0</span></span>
+                </div>
+            </div>
+            <div class="control-group motion-settings2">
+               
+                <div class="param-row">
+                    <label>垂型喷射速度：
+                        <input type="number" id="accelDistance" value="0">
+                    </label>
+                    <label>喷射高度：
+                        <input type="number" id="stepCount" value="0">
+                    </label>
+                    <label>固化步骤：
+                        <input type="number" id="accelDistance" value="0">
+                    </label>
+                </div>
+            </div>
+            <!-- 状态显示 -->
+            <div class="status-display">
+                <div class="fule">
+                    <button onclick="updateDisplay()" style="position: relative; bottom: 430px; left: 1000px;">更新显示</button>
+                </div>
+                <div class="status-item">
+                    <span>串口状态：</span>
+                    <span id="serialStatus" class="status-indicator">未连接</span>
+                </div>
+                <div class="status-item">
+                    <span>当前行代码：</span>
+                    <code id="currentGCode">N/A</code>
+                </div>
+            </div>
+    
+            <!-- 串口操作 -->
+            <div class="serial-actions">
+                <button id="connectSerial" class="primary-btn">连接串口</button>
+                <button id="startPrint" class="primary-btn" disabled>开始打印</button>
+            </div>
+        </div>
+    </div>
+    <!-- 原有容器结构保持不变 -->
+    <div class="progress-overlay" id="progressOverlay">
+        <div class="progress-box">
+            <h3>打印进度</h3>
+            <div class="progress-bar" style="width:300px;height:20px;background:#ddd">
+                <div id="printProgress" style="width:0%;height:100%;background:#4CAF50"></div>
+            </div>
+            <p>已发送指令: <span id="sentCommands">0</span>/<span id="totalCommands">0</span></p >
+            <button onclick="cancelPrint()" style="margin-top:15px">取消打印</button>
+        </div>
+    </div>
+
+    <script>
+
+         
+         <!-- 时间显示 -->
+            function calculateTimeUsed() {
+            <div class="control-group time-display">
+                <div class="time-row">
+                    <label>开始时间：
+                        <input type="datetime-local" id="endTime"></input>
+                    </label>
+                    
+                </div>
+                <div>
+                    <br class="time-row">
+                    <label>结束时间：
+                        <input type="datetime-local" id="endTime"></input>
+                    </label>
+                    </br>
+                    <span>用时/s：<span id="timeUsed">0</span></span>
+                </div>
+            </div>
+            
+            if (!start || !end) {
+                timeUsedSpan.style.color = '#999';
+            } else if (endTimestamp < startTimestamp) {
+                timeUsedSpan.style.color = 'red';
+            } else {
+                timeUsedSpan.style.color = '#4CAF50';
+            }
+        }
+        
+        // 添加输入清除功能
+        document.querySelector('.time-display').addEventListener('dblclick', () => {
+            startTimeInput.value = '';
+            endTimeInput.value = '';
+            timeUsedSpan.textContent = '0';
+            timeUsedSpan.style.color = '';
+        });
+        // 增强版串口控制逻辑
+        let serialPort;
+        let isPrinting = false;
+        let printAbortController = new AbortController();
+
+        // 连接串口
+document.getElementById('connectSerial').addEventListener('click', async () => {
+    try {
+        serialPort = await navigator.serial.requestPort();
+        await serialPort.open({ baudRate: 115200 });
+        updateSerialStatus('已连接', '#4CAF50');
+        document.getElementById('startPrint').disabled = false;
+        
+        // 启动数据监听
+        const reader = serialPort.readable.getReader();
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            handleSerialData(value);
+        }
+    } catch (error) {
+        updateSerialStatus('连接失败', '#ff0000');
+        console.error('Serial connection error:', error);
+    }
+});
+
+// 发送G代码指令
+async function sendGCode(command) {
+    if (!serialPort) return;
+    const writer = serialPort.writable.getWriter();
+    const encoder = new TextEncoder();
+    await writer.write(encoder.encode(command + '\n'));
+    writer.releaseLock();
+}
+
+// 状态更新函数
+
+    function updateDisplay() {
+            // 获取输入值
+            const pointNum = document.getElementById('pointInput').value || 0;
+            const faceNum = document.getElementById('faceInput').value || 0;
+
+            // 更新点表显示
+            document.getElementById('point-count').textContent = pointNum;
+            
+            // 更新面表显示
+            document.getElementById('face-count').textContent = faceNum;
+        }
+    
+
+
+// 数据处理函数
+function handleSerialData(data) {
+    const decoder = new TextDecoder();
+    const output = decoder.decode(data);
+    document.getElementById('currentGCode').textContent = output;
+}
+
+// 打印控制逻辑
+document.getElementById('startPrint').addEventListener('click', async () => {
+    if (!isPrinting) {
+        isPrinting = true;
+        // 获取所有参数
+        const params = {
+            accel: document.getElementById('accelDistance').value,
+            steps: document.getElementById('stepCount').value,
+            speed: document.getElementById('speedControl').checked
+        };
+        
+        // 生成并发送G代码
+        await sendGCode(`M204 S${params.accel}`); // 设置加速度
+        await sendGCode(`G1 F${params.speed ? 3000 : 1500}`); // 设置速度
+        startPrintingLoop(params.steps);
+    }
+});
+
+async function startPrintingLoop(steps) {
+    for (let i = 0; i < steps; i++) {
+        const gcode = generateSpiralGCode(i); // 生成螺旋路径G代码
+        await sendGCode(gcode);
+        await new Promise(r => setTimeout(r, 100)); // 发送间隔
+    }
+    isPrinting = false;
+}
+// 路径生成算法（示例）
+function generateSpiralGCode(step) {
+    const radius = 50;
+    const zIncrement = 0.2;
+    const angle = step * 0.1;
+    const x = radius * Math.cos(angle);
+    const y = radius * Math.sin(angle);
+    const z = step * zIncrement;
+    return `G1 X${x.toFixed(2)} Y${y.toFixed(2)} Z${z.toFixed(2)}`;
+}
+
+// 输入同步逻辑
+document.getElementById('inputPoint').addEventListener('change', syncTables);
+document.getElementById('inputFace').addEventListener('change', syncTables);
+
+function syncTables() {
+    document.getElementById('outputPoint').textContent = 
+        document.getElementById('inputPoint').value;
+    document.getElementById('outputFace').textContent = 
+        document.getElementById('inputFace').value;
+}
+
+        // 增强的串口连接逻辑
+        async function connectSerial() {
+            try {
+                // 硬件特性验证
+                if (!('serial' in navigator)) {
+                    throw new Error('浏览器不支持串口功能');
+                }
+
+                serialPort = await navigator.serial.requestPort();
+                await serialPort.open({
+                    baudRate: 115200,
+                    dataBits: 8,
+                    stopBits: 1,
+                    parity: 'none'
+                });
+
+                updateSerialStatus('已连接', '#4CAF50');
+                document.getElementById('startPrint').disabled = false;
+                
+                // 使用AbortController实现可中断读取
+                const reader = serialPort.readable.getReader();
+                while (true) {
+                    try {
+                        const { value, done } = await reader.read({
+                            signal: printAbortController.signal
+                        });
+                        if (done) break;
+                        handleSerialData(value);
+                    } catch (err) {
+                        if (err.name === 'AbortError') break;
+                        throw err;
+                    }
+                }
+            } catch (error) {
+                handleSerialError(error);
+            }
+        }
+
+        // 增强的错误处理
+        function handleSerialError(error) {
+            console.error('串口错误:', error);
+            updateSerialStatus(`错误: ${error.message}`, '#ff0000');
+            if (serialPort) {
+                serialPort.close().catch(() => {});
+                serialPort = null;
+            }
+            document.getElementById('startPrint').disabled = true;
+        }
+
+        // 增强的打印控制
+        async function startPrint() {
+            if (!validateParameters()) return;
+
+            try {
+                isPrinting = true;
+                showProgressOverlay(true);
+                
+                // 初始化打印参数
+                const params = {
+                    accel: parseInt(document.getElementById('accelDistance').value),
+                    steps: parseInt(document.getElementById('stepCount').value),
+                    speed: document.getElementById('speedControl').checked
+                };
+
+                // 发送初始化指令
+                await sendGCode('M110 N0');  // 重置行号
+                await sendGCode(`M204 S${params.accel}`);
+                await sendGCode(`G1 F${params.speed ? 3000 : 1500}`);
+
+                // 启动打印任务
+                await executePrintJob(params.steps);
+            } catch (error) {
+                handlePrintError(error);
+            } finally {
+                isPrinting = false;
+                showProgressOverlay(false);
+            }
+        }
+
+        // 增强的路径生成算法
+        function generateAdvancedGCode(step, totalSteps) {
+            const maxRadius = 80;
+            const layerHeight = 0.2;
+            const angleStep = (2 * Math.PI) / 100;  // 每层旋转角度
+            
+            // 螺旋参数计算
+            const currentLayer = Math.floor(step / 100);
+            const layerProgress = step % 100;
+            
+            const radius = maxRadius * (1 - currentLayer * 0.01);
+            const angle = angleStep * layerProgress;
+            const zPos = currentLayer * layerHeight;
+
+            // 笛卡尔坐标计算
+            const x = radius * Math.cos(angle);
+            const y = radius * Math.sin(angle);
+            
+            // 生成G代码
+            return {
+                move: `G1 X${x.toFixed(3)} Y${y.toFixed(3)} Z${zPos.toFixed(3)}`,
+                extrude: `G1 E${0.1.toFixed(3)}`  // 模拟挤出
+            };
+        }
+
+        // 增强的打印任务执行
+        async function executePrintJob(totalSteps) {
+            const startTime = Date.now();
+            let successCount = 0;
+            
+            document.getElementById('totalCommands').textContent = totalSteps * 2;
+            
+            for (let i = 0; i < totalSteps; i++) {
+                if (printAbortController.signal.aborted) break;
+                
+                // 生成双指令（移动+挤出）
+                const codes = generateAdvancedGCode(i, totalSteps);
+                
+                try {
+                    await sendGCode(codes.move);
+                    await sendGCode(codes.extrude);
+                    successCount += 2;
+                    
+                    // 更新进度
+                    updateProgress(successCount, totalSteps * 2);
+                    updateTimeDisplay(startTime);
+                } catch (error) {
+                    throw new Error(`指令发送失败: ${error.message}`);
+                }
+                
+                await new Promise(r => setTimeout(r, calculateDelay(i)));
+            }
+        }
+
+        // 动态延迟计算
+        function calculateDelay(step) {
+            const baseDelay = 50;  // 基础延迟
+            const variance = Math.sin(step * 0.1) * 20;  // 正弦波动
+            return baseDelay + variance;
+        }
+
+        // 辅助函数
+        function validateParameters() {
+            const steps = document.getElementById('stepCount').value;
+            if (steps < 10 || steps > 10000) {
+                alert('步骤数需在10-10000之间');
+                return false;
+            }
+            return true;
+        }
+
+        function showProgressOverlay(show) {
+            document.getElementById('progressOverlay').style.display = show ? 'flex' : 'none';
+        }
+
+        function updateProgress(current, total) {
+            const percent = (current / total * 100).total * (100).toFixed(1);
+            document.getElementById('printProgress').style.width = `${percent}%`;
+            document.getElementById('sentCommands').textContent = current;
+        }
+        function updateTimeDisplay(startTime) {
+            const elapsed = (Date.now() - startTime) / 1000;
+            document.getElementById('timeUsed').textContent = elapsed.toFixed(1);
+        }
+
+        function cancelPrint() {
+            printAbortController.abort();
+            printAbortController = new AbortController();
+            isPrinting = false;
+            showProgressOverlay(false);
+        }
+
+        // 初始化事件监听
+        document.getElementById('connectSerial').addEventListener('click', connectSerial);
+        document.getElementById('startPrint').addEventListener('click', startPrint);
+       
+    
+    </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 操作系统文件
+Thumbs.db
+.DS_Store

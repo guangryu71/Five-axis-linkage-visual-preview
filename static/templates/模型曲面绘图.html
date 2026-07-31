@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STL模型路线绘制工具</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            display: flex; 
+            height: 100vh; 
+        }
+        #viewer { 
+            width: 800px;
+            height: 600px;
+            margin: 20px;
+            border: 1px solid #666;
+            position: relative;
+            /* nodeIntegration: true */
+        }
+        #controls {
+            width: 20%;
+            padding: 15px;
+            background: #f0f0f0;
+            overflow-y: auto;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+        }
+        .control-group { 
+            margin-bottom: 20px;
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        h3 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+        }
+        button {
+            margin: 5px 0;
+            padding: 8px 12px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        #stlFile {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        textarea { 
+            width: 100%; 
+            height: 100px;
+            margin-bottom: 10px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        #currentPosition {
+            padding: 8px;
+            background: #e9e9e9;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        #modelInfo {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+        #loading {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="viewer">
+            <div id="loading">加载中...</div>
+        </div>
+        <div id="controls">
+            <div class="control-group">
+                <h3>模型操作</h3>
+                <input type="file" id="stlFile" accept=".stl">
+                <button id="resetView">重置视图</button>
+                <div id="modelInfo">未加载模型</div>
+            </div>
+            
+            <div class="control-group">
+                <h3>路线坐标</h3>
+                <p>格式: X,Y,Z (每行一个点)</p>
+                <textarea id="pathCoordinates" placeholder="例如:
+0,0,0
+1,0,0
+1,1,0"></textarea>
+                <button id="drawPath">绘制路线</button>
+                <button id="clearPath">清除路线</button>
+                <button id="addCurrentPoint">添加当前点</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>当前坐标</h3>
+                <div id="currentPosition">点击模型表面获取坐标</div>
+            </div>
+            
+            <div class="control-group">
+                <h3>导出</h3>
+                <button id="exportImage">导出图片</button>
+                <button id="exportData">导出CSV数据</button>
+                <button id="exportGCode">导出G代码</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>路径导入</h3>
+                <input type="file" id="pathFile" accept=".csv,.json,.nc,.gcode">
+                <button id="importPath">导入路径</button>
+                <div style="margin-top: 10px;">
+                    <label>文件格式：</label>
+                    <select id="pathFormat">
+                        <option value="csv">CSV (X,Y,Z)</option>
+                        <option value="json">JSON (带元数据)</option>
+                        <option value="gcode">G代码</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h3>模型缩放</h3>
+                <button id="zoomIn">放大 (+)</button>
+                <button id="zoomOut">缩小 (-)</button>
+                <button id="resetZoom">重置缩放</button>
+                <div>当前缩放: <span id="scaleValue">1.0</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Three.js 库 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <!-- 在Three.js导入后添加 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/curves/CurveExtras.js"></script>
+
+    <script>
+        // 初始化场景
+        let scene, camera, renderer, controls;
+        let model, pathPoints = [];
+        let isModelLoaded = false;
+        let modelBoundingBox = new THREE.Box3();
+        let currentIntersectPoint = null;
+
+        // 主初始化函数
+        function init() {
+            // 创建场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            // 创建相机 - 初始参数将在模型加载后调整
+            const viewer = document.getElementById('viewer');
+            camera = new THREE.PerspectiveCamera(60, viewer.clientWidth / viewer.clientHeight, 0.1, 1000);
+            
+            // 创建渲染器
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                alpha: true,
+                preserveDrawingBuffer: true // 允许导出图像
+            });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(viewer.clientWidth, viewer.clientHeight);
+            viewer.appendChild(renderer.domElement);
+            
+            // 添加光源
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+            
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight1.position.set(1, 1, 1);
+            scene.add(directionalLight1);
+            
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight2.position.set(-1, -1, -1);
+            scene.add(directionalLight2);
+            
+            // 添加坐标轴辅助
+            const dirX = new THREE.Vector3(1, 0, 0);
+            const dirY = new THREE.Vector3(0, 1, 0);
+            const dirZ = new THREE.Vector3(0, 0, 1);
+            const origin = new THREE.Vector3(-13.5, 0, -5);
+            
+            const arrowX = new THREE.ArrowHelper(dirX, origin, 15, 0xff0000);
+            const arrowY = new THREE.ArrowHelper(dirY, origin, 15, 0x00ff00);
+            const arrowZ = new THREE.ArrowHelper(dirZ, origin, 15, 0x0000ff);
+            
+            scene.add(arrowX, arrowY, arrowZ);
+            
+            // 添加网格地面
+            const gridHelper = new THREE.GridHelper(100, 100);
+            gridHelper.position.y = -0.5; // 稍微下移避免与模型重叠
+            scene.add(gridHelper);
+            
+            // 添加事件监听器
+            setupEventListeners();
+            
+            // 开始动画循环
+            animate();
+        }
+
+        // 动画循环
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // 设置事件监听器
+        function setupEventListeners() {
+            // STL文件导入
+            document.getElementById('stlFile').addEventListener('change', loadSTL);
+            
+            // 绘制路线
+            document.getElementById('drawPath').addEventListener('click', drawPathOnModel);
+            
+            // 清除路线
+            document.getElementById('clearPath').addEventListener('click', clearPath);
+            
+            // 添加当前点
+            document.getElementById('addCurrentPoint').addEventListener('click', addCurrentPointToPath);
+            
+            // 导出功能
+            document.getElementById('exportImage').addEventListener('click', exportImage);
+            document.getElementById('exportData').addEventListener('click', exportData);
+            document.getElementById('exportGCode').addEventListener('click', exportGCode);
+            
+            // 导入功能
+            document.getElementById('importPath').addEventListener('click', importPath);
+            
+            // 重置视图
+            document.getElementById('resetView').addEventListener('click', resetView);
+            
+            // 鼠标交互获取坐标
+            renderer.domElement.addEventListener('mousedown', onMouseDown, false);
+            renderer.domElement.addEventListener('mousemove', onMouseMove, false);
+            
+            // 窗口大小调整
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // 加载STL模型
+        function loadSTL(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            showLoading(true);
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                // 清除旧模型和路径
+                if (model) scene.remove(model);
+                clearPath();
+                
+                try {
+                    // 加载STL模型
+                    const loader = new THREE.STLLoader();
+                    const contents = e.target.result;
+                    
+                    const geometry = loader.parse(contents);
+                    const material = new THREE.MeshPhongMaterial({
+                        color: 0xaaaaaa,
+                        specular: 0x111111,
+                        shininess: 100,
+                        side: THREE.DoubleSide,
+                        transparent: true,
+                        opacity: 0.9
+                    });
+                    
+                    model = new THREE.Mesh(geometry, material);
+                    model.rotation.x=-Math.PI/2
+                    
+                    // 计算模型的包围盒
+                    geometry.computeBoundingBox();
+                    modelBoundingBox = geometry.boundingBox.clone();
+                    
+                    // 计算模型中心点
+                    const center = new THREE.Vector3();
+                    modelBoundingBox.getCenter(center);
+                    
+                    // 将模型中心移动到场景原点 (0,0,0)
+                    model.position.sub(center);
+                    console.log('包围盒中心：',center);
+                    geometry.boundingBox.getCenter(center);
+                    geometry.translate(0,0,0)
+
+                    //重要！根据具体模型移动到合适位置
+                    model.position.set(0,0,0)
+                    
+                    // 更新包围盒位置
+                    modelBoundingBox.translate(center.negate());
+                    
+                    // 计算模型尺寸
+                    const size = modelBoundingBox.getSize(new THREE.Vector3());
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    
+                    // 设置合适的缩放比例，使模型在视图中大小适中
+                    const baseScale=7
+                    const scale = baseScale * (5/maxDim);
+                    model.scale.set(0.1,0.1,0.1);
+                    
+                    // 应用相同的缩放和位移到包围盒
+                    modelBoundingBox.min.multiplyScalar(scale);
+                    modelBoundingBox.max.multiplyScalar(scale);
+                    
+                    scene.add(model);
+                    isModelLoaded = true;
+                    
+                    // 显示模型信息
+                    updateModelInfo();
+                    
+                    // 初始化轨道控制器
+                    initOrbitControls();
+                    
+                    // 调整相机位置以适应模型
+                    resetView();
+                    
+                } catch (error) {
+                    console.error("Error loading STL file:", error);
+                    alert("加载STL文件时出错: " + error.message);
+                } finally {
+                    showLoading(false);
+                }
+            };
+            
+            reader.onerror = function() {
+                showLoading(false);
+                alert("读取文件时出错");
+            };
+            
+            reader.readAsArrayBuffer(file);
+        }
+
+        // 初始化轨道控制器
+        function initOrbitControls() {
+            // 移除旧控制器（如果存在）
+            if (controls) {
+                controls.dispose();
+            }
+            
+            // 创建新的轨道控制器
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            
+            // 设置控制中心为场景原点 (0,0,0)
+            controls.target.set(0, 0, 0);
+            
+            // 平滑控制
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.1;
+            
+            // 限制缩放范围
+            const size = modelBoundingBox.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            controls.minDistance = maxDim * 0.1;
+            controls.maxDistance = maxDim * 10;
+            
+            // 限制垂直旋转角度以避免翻转
+            controls.minPolarAngle = 0; // 弧度 (0表示北极)
+            controls.maxPolarAngle = Math.PI; // 弧度 (π表示南极)
+            
+            // 可以无限水平旋转
+            controls.minAzimuthAngle = -Infinity;
+            controls.maxAzimuthAngle = Infinity;
+            
+            // 更新控制器
+            controls.update();
+        }
+
+        // 重置视图
+        function resetView() {
+            if (!isModelLoaded) return;
+            
+            // 计算模型尺寸
+            const size = modelBoundingBox.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            
+            // 更智能的缩放计算
+            const scale = 10 / maxDim; // 调整基础缩放因子
+            model.scale.set(scale, scale, scale);
+            
+            // 更新包围盒缩放
+            // 更合理的相机距离计算
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraDistance = (maxDim * scale) / (2 * Math.tan(fov / 2));
+            
+            // 添加安全距离
+            cameraDistance *= 50;
+            
+            // 设置相机位置
+            camera.position.set(cameraDistance, cameraDistance, cameraDistance);
+            controls.target.set(0, 0, 0);
+            controls.update();
+        }
+
+        // 绘制模型表面的路径
+        function drawPathOnModel() {
+            if (!isModelLoaded) {
+                alert('请先导入STL模型');
+                return;
+            }
+            
+            // 清除旧路径
+            clearPath();
+            
+            // 解析坐标输入
+            const coordInput = document.getElementById('pathCoordinates').value;
+            const lines = coordInput.split('\n').filter(line => line.trim() !== '');
+            
+            if (lines.length < 2) {
+                alert('至少需要两个点来绘制路线');
+                return;
+            }
+            
+            // 解析坐标点并投影到模型表面
+            const surfacePoints = [];
+            for (const line of lines) {
+                const coords = line.split(',').map(coord => parseFloat(coord.trim()));
+                if (coords.length !== 3 || coords.some(isNaN)) {
+                    alert(`无效坐标格式: ${line}. 请使用x,y,z格式`);
+                    return;
+                }
+                
+                // 将点投影到模型表面
+                const projectedPoint = projectPointToSurface(new THREE.Vector3(coords[0], coords[1], coords[2]));
+                if (projectedPoint) {
+                    surfacePoints.push(projectedPoint);
+                }
+            }
+            
+            if (surfacePoints.length < 2) {
+                alert('无法在模型表面找到足够的有效点');
+                return;
+            }
+            
+            // 创建平滑的曲线路径
+            createSurfacePath(surfacePoints);
+        }
+
+        // 将点投影到模型表面
+        function projectPointToSurface(point) {
+            if (!model) return null;
+            
+            // 创建从相机指向该点的射线
+            const direction = point.clone().sub(camera.position).normalize();
+            const raycaster = new THREE.Raycaster(camera.position, direction);
+            
+            // 检测与模型的交点
+            const intersects = raycaster.intersectObject(model);
+            
+            if (intersects.length > 0) {
+                return intersects[0].point;
+            }
+            return null;
+        }
+
+        // 创建模型表面的路径
+        function createSurfacePath(points) {
+            // 创建CatmullRom曲线使路径更平滑
+            const curve = new THREE.CatmullRomCurve3(points);
+            const curvePoints = curve.getPoints(50); // 获取50个点使曲线更平滑
+            
+            // 创建路径几何体
+            const pathGeometry = new THREE.BufferGeometry().setFromPoints(curvePoints);
+            const pathMaterial = new THREE.LineBasicMaterial({ 
+                color: 0xff0000, 
+                linewidth: 3 
+            });
+            const pathLine = new THREE.Line(pathGeometry, pathMaterial);
+            
+            scene.add(pathLine);
+            pathPoints.push(pathLine);
+            
+            // 在路径点上添加标记
+            for (let i = 0; i < points.length; i++) {
+                const sphereGeometry = new THREE.SphereGeometry(0.05, 16, 16);
+                const sphereMaterial = new THREE.MeshBasicMaterial({ color: getPointColor(i) });
+                const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+                sphere.position.copy(points[i]);
+                scene.add(sphere);
+                pathPoints.push(sphere);
+                
+                // 添加标签
+                addLabel(points[i], `P${i+1} (${points[i].x.toFixed(2)}, ${points[i].y.toFixed(2)}, ${points[i].z.toFixed(2)})`);
+            }
+        }
+
+        // 获取路径点颜色
+        function getPointColor(index) {
+            const colors = [
+                0x00ff00, // 绿色 - 起点
+                0x00ff00, // 红色
+                0x00ff00, // 蓝色
+                0x00ff00, // 黄色
+                0x00ff00, // 紫色
+                0x00ffff  // 青色
+            ];
+            return colors[index % colors.length];
+        }
+
+        // 清除路径
+        function clearPath() {
+            pathPoints.forEach(obj => scene.remove(obj));
+            pathPoints = [];
+            currentIntersectPoint = null;
+            
+            // 清除所有标签
+            scene.children.forEach(child => {
+                if (child.userData.isLabel) {
+                    scene.remove(child);
+                }
+            });
+        }
+
+        // 添加标签
+        function addLabel(position, text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 128;
+            const context = canvas.getContext('2d');
+            
+            // 背景
+            context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 文字
+            context.font = 'Bold 16px Arial';
+            context.fillStyle = 'white';
+            context.textAlign = 'center';
+            
+            // 分割文本以适应画布
+            const lines = text.split('\n');
+            const lineHeight = 20;
+            const startY = (canvas.height - (lines.length * lineHeight)) / 2 + lineHeight;
+            
+            lines.forEach((line, i) => {
+                context.fillText(line, canvas.width / 2, startY + (i * lineHeight));
+            });
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ 
+                map: texture,
+                transparent: true 
+            });
+            const sprite = new THREE.Sprite(material);
+            sprite.position.copy(position);
+            sprite.position.y += 0.2; // 稍微抬高一点
+            sprite.scale.set(0.5, 0.25, 1);
+            sprite.userData.isLabel = true;
+            scene.add(sprite);
+        }
+
+        // 鼠标点击事件
+        function onMouseDown(event) {
+            if (!isModelLoaded || event.button !== 0) return; // 只处理左键点击
+            
+            const mouse = getNormalizedMousePosition(event);
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+            
+            // 检测与模型的交点
+            const intersects = raycaster.intersectObject(model);
+            
+            if (intersects.length > 0) {
+                currentIntersectPoint = intersects[0].point;
+                updateCurrentPositionDisplay();
+            }
+        }
+
+        // 鼠标移动事件
+        function onMouseMove(event) {
+            if (!isModelLoaded) return;
+            
+            const mouse = getNormalizedMousePosition(event);
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+            
+            // 检测与模型的交点
+            const intersects = raycaster.intersectObject(model);
+            
+            if (intersects.length > 0) {
+                renderer.domElement.style.cursor = 'pointer';
+            } else {
+                renderer.domElement.style.cursor = 'default';
+            }
+        }
+
+        // 获取归一化鼠标位置
+        function getNormalizedMousePosition(event) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            return {
+                x: ((event.clientX - rect.left) / rect.width) * 2 - 1,
+                y: -((event.clientY - rect.top) / rect.height) * 2 + 1
+            };
+        }
+
+        // 更新当前坐标显示
+        function updateCurrentPositionDisplay() {
+            if (currentIntersectPoint) {
+                document.getElementById('currentPosition').textContent = 
+                    `X: ${currentIntersectPoint.x.toFixed(3)}\nY: ${currentIntersectPoint.y.toFixed(3)}\nZ: ${currentIntersectPoint.z.toFixed(3)}`;
+            } else {
+                document.getElementById('currentPosition').textContent = '点击模型表面获取坐标';
+            }
+        }
+
+        // 添加当前点到路径
+        function addCurrentPointToPath() {
+            if (!currentIntersectPoint) {
+                alert('请先点击模型表面选择点');
+                return;
+            }
+            
+            const coordTextarea = document.getElementById('pathCoordinates');
+            if (coordTextarea.value) coordTextarea.value += '\n';
+            coordTextarea.value += `${currentIntersectPoint.x.toFixed(3)},${currentIntersectPoint.y.toFixed(3)},${currentIntersectPoint.z.toFixed(3)}`;
+            
+            // 自动投影到表面
+            const projectedPoint = projectPointToSurface(currentIntersectPoint);
+            if (projectedPoint) {
+                currentIntersectPoint.copy(projectedPoint);
+                updateCurrentPositionDisplay();
+            }
+        }
+
+        // 导出图片
+        function exportImage() {
+            // 临时禁用控制器
+            const controlsEnabled = controls.enabled;
+            controls.enabled = false;
+            
+            // 创建一个临时canvas来绘制当前视图
+            const canvas = renderer.domElement;
+            const dataURL = canvas.toDataURL('image/png');
+            
+            // 恢复控制器状态
+            controls.enabled = controlsEnabled;
+            
+            // 创建下载链接
+            const link = document.createElement('a');
+            link.href = dataURL;
+            link.download = `model_path_${new Date().toISOString().slice(0, 10)}.png`;
+            link.click();
+        }
+
+        // 导出路线数据为CSV格式
+        function exportData() {
+            const coordTextarea = document.getElementById('pathCoordinates');
+            if (!coordTextarea.value.trim()) {
+                alert('没有路线数据可导出');
+                return;
+            }
+            
+            // 解析坐标数据
+            const lines = coordTextarea.value.split('\n').filter(line => line.trim() !== '');
+            
+            // 创建CSV内容
+            let csvContent = 'X,Y,Z\n'; // CSV头部
+            
+            for (const line of lines) {
+                const coords = line.split(',').map(coord => parseFloat(coord.trim()));
+                if (coords.length === 3 && coords.every(coord => !isNaN(coord))) {
+                    csvContent += `${coords[0]},${coords[1]},${coords[2]}\n`;
+                }
+            }
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `path_coordinates_${new Date().toISOString().slice(0, 10)}.csv`;
+            link.click();
+            
+            // 清理
+            setTimeout(() => URL.revokeObjectURL(url), 100);
+        }
+        
+        // 导出为G代码
+        function exportGCode() {
+            const coordTextarea = document.getElementById('pathCoordinates');
+            if (!coordTextarea.value.trim()) {
+                alert('没有路线数据可导出');
+                return;
+            }
+            
+            // 解析路径点
+            const lines = coordTextarea.value.split('\n').filter(line => line.trim() !== '');
+            const pathPoints = [];
+            
+            for (const line of lines) {
+                const coords = line.split(',').map(coord => parseFloat(coord.trim()));
+                if (coords.length === 3 && coords.every(coord => !isNaN(coord))) {
+                    pathPoints.push(coords);
+                }
+            }
+            
+            if (pathPoints.length < 2) {
+                alert('至少需要两个有效点来生成G代码');
+                return;
+            }
+            
+            // 生成G代码内容
+            let gcode = '; 导出的数控加工路径\n';
+            gcode += `; 生成时间: ${new Date().toLocaleString()}\n`;
+            gcode += `; 路径点数: ${pathPoints.length}\n\n`;
+            
+            // 初始化
+            gcode += 'G21 ; 设置单位为毫米\n';
+            gcode += 'G90 ; 绝对坐标编程\n';
+            gcode += 'G94 ; 进给率单位为毫米/分钟\n\n';
+            
+            // 移动到安全高度和起点
+            const firstPoint = pathPoints[0];
+            const safeZ = Math.max(...pathPoints.map(p => p[2])) + 10;
+            gcode += `G0 X${firstPoint[0].toFixed(3)} Y${firstPoint[1].toFixed(3)} Z${safeZ.toFixed(3)} ; 快速移动到起点上方\n`;
+            gcode += `G1 Z${firstPoint[2].toFixed(3)} F500 ; 下移到加工起始高度\n\n`;
+            
+            // 写入路径点
+            for (let i = 1; i < pathPoints.length; i++) {
+                const prevPoint = pathPoints[i-1];
+                const currPoint = pathPoints[i];
+                
+                // 判断是否需要抬刀
+                const zChange = Math.abs(currPoint[2] - prevPoint[2]);
+                
+                if (zChange > 5) {
+                    gcode += `G0 Z${safeZ.toFixed(3)} ; 快速抬刀到安全高度\n`;
+                    gcode += `G0 X${currPoint[0].toFixed(3)} Y${currPoint[1].toFixed(3)} ; 快速移动到下一个点上方\n`;
+                    gcode += `G1 Z${currPoint[2].toFixed(3)} F500 ; 下移到加工高度\n`;
+                } else {
+                    gcode += `G1 X${currPoint[0].toFixed(3)} Y${currPoint[1].toFixed(3)} Z${currPoint[2].toFixed(3)} F200 ; 切削移动\n`;
+                }
+                
+                // 添加注释
+                if (i % 10 === 0) {
+                    gcode += `; 路径点 ${i+1}/${pathPoints.length}\n`;
+                }
+            }
+            
+            // 结束
+            gcode += '\nG0 Z50 ; 快速抬刀\n';
+            gcode += 'G28 ; 返回原点\n';
+            gcode += 'M30 ; 程序结束\n';
+            
+            // 创建并下载文件
+            const blob = new Blob([gcode], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `exported_path_${new Date().toISOString().slice(0, 10)}.nc`;
+            link.click();
+            
+            // 清理
+            setTimeout(() => URL.revokeObjectURL(url), 100);
+        }
+        
+        // 导入路径
+        function importPath() {
+            const fileInput = document.getElementById('pathFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('请选择要导入的路径文件');
+                return;
+            }
+            
+            const reader = new FileReader();
+            const format = document.getElementById('pathFormat').value;
+            
+            reader.onload = function(e) {
+                try {
+                    const content = e.target.result;
+                    let pathPoints = [];
+                    
+                    if (format === 'csv') {
+                        // 处理CSV格式 (X,Y,Z)
+                        const lines = content.split('\n');
+                        for (const line of lines) {
+                            const trimmed = line.trim();
+                            if (!trimmed || trimmed.startsWith('X') || trimmed.startsWith('#')) continue;
+                            
+                            const coords = trimmed.split(',').map(coord => parseFloat(coord.trim()));
+                            if (coords.length === 3 && coords.every(coord => !isNaN(coord))) {
+                                pathPoints.push(coords);
+                            }
+                        }
+                    } else if (format === 'json') {
+                        // 处理JSON格式
+                        const data = JSON.parse(content);
+                        if (data.path && Array.isArray(data.path)) {
+                            pathPoints = data.path;
+                        } else {
+                            throw new Error('JSON文件中未找到有效的路径数据');
+                        }
+                    } else if (format === 'gcode') {
+                        // 处理G代码格式
+                        const lines = content.split('\n');
+                        let currentX = 0, currentY = 0, currentZ = 0;
+                        let hasStarted = false;
+                        
+                        for (const line of lines) {
+                            const trimmed = line.trim();
+                            if (!trimmed || trimmed.startsWith(';')) continue;
+                            
+                            if (trimmed.startsWith(('G1', 'G0', 'G01', 'G00'))) {
+                                // 使用正则表达式提取坐标值
+                                const xMatch = trimmed.match(/X([-\d.]+)/);
+                                const yMatch = trimmed.match(/Y([-\d.]+)/);
+                                const zMatch = trimmed.match(/Z([-\d.]+)/);
+                                
+                                if (xMatch) currentX = parseFloat(xMatch[1]);
+                                if (yMatch) currentY = parseFloat(yMatch[1]);
+                                if (zMatch) currentZ = parseFloat(zMatch[1]);
+                                
+                                // 只添加有Z坐标的点（表示切削点）
+                                if (zMatch) {
+                                    pathPoints.push([currentX, currentY, currentZ]);
+                                    hasStarted = true;
+                                } else if (!hasStarted && xMatch && yMatch) {
+                                    // 添加第一个有X和Y坐标的点（即使没有Z）
+                                    pathPoints.push([currentX, currentY, currentZ]);
+                                    hasStarted = true;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (pathPoints.length === 0) {
+                        throw new Error('未能从文件中解析出有效的路径点');
+                    }
+                    
+                    // 将路径点转换为文本格式并填入文本框
+                    let pathText = '';
+                    for (const point of pathPoints) {
+                        pathText += `${point[0]},${point[1]},${point[2]}\n`;
+                    }
+                    
+                    document.getElementById('pathCoordinates').value = pathText;
+                    alert(`成功导入 ${pathPoints.length} 个路径点`);
+                    
+                } catch (error) {
+                    alert(`导入路径失败: ${error.message}`);
+                }
+            };
+            
+            reader.onerror = function() {
+                alert('读取文件时出错');
+            };
+            
+            if (format === 'gcode' || format === 'json') {
+                reader.readAsText(file);
+            } else {
+                reader.readAsText(file);
+            }
+        }
+
+        // 窗口大小调整
+        function onWindowResize() {
+            const viewer = document.getElementById('viewer');
+            camera.aspect = viewer.clientWidth / viewer.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(viewer.clientWidth, viewer.clientHeight);
+        }
+
+        // 更新模型信息显示
+        function updateModelInfo() {
+            const size = modelBoundingBox.getSize(new THREE.Vector3());
+            const info = `模型尺寸:
+X: ${size.x.toFixed(2)} units
+Y: ${size.y.toFixed(2)} units
+Z: ${size.z.toFixed(2)} units
+中心点: (0, 0, 0)`;
+            document.getElementById('modelInfo').innerHTML = info.replace(/\n/g, '<br>');
+        }
+
+        // 显示/隐藏加载指示器
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+        
+        // 初始化应用
+        init();
+    </script>
+</body>
+</html>

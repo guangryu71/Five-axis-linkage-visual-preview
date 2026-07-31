@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>本地模型聊天工具</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .model-info {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            border: 1px solid #bbdefb;
+        }
+        .chat-container {
+            margin-top: 20px;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        #userInput {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        #userInput:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        .btn-primary {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #45a049;
+        }
+        .btn-secondary {
+            background-color: #f44336;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background-color: #da190b;
+        }
+        .response-box {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 20px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            margin-top: 15px;
+        }
+        .response-title {
+            font-weight: bold;
+            color: #495057;
+            margin-bottom: 10px;
+        }
+        .model-list {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .model-item {
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .model-item:last-child {
+            border-bottom: none;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+        }
+        .streaming {
+            position: relative;
+        }
+        .streaming::after {
+            content: '|';
+            animation: blink 1s infinite;
+            color: #4CAF50;
+        }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        .instructions {
+            background-color: #e8f5e8;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            border: 1px solid #c3e6cb;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #155724;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        
+        <!-- 状态显示区域 -->
+        <div id="statusContainer"></div>
+        
+        <!-- 使用说明 -->
+        <div class="instructions">
+            <h3>📖 使用说明</h3>
+            <p>1. 确保本地已启动 Ollama 服务: <code>ollama serve</code></p>
+            <p>2. 确保已下载默认模型: <code>ollama pull deepseek-r1:8b</code></p>
+        </div>
+        
+        <!-- 聊天区域 -->
+        <div class="chat-container">
+            <div class="input-group">
+                <input type="text" id="userInput" placeholder="请输入您的问题..." />
+                <button id="sendBtn" class="btn btn-primary">发送</button>
+            </div>
+            
+            <div id="responseContainer" style="display: none;">
+                <div class="response-title">📝 模型回复:</div>
+                <div id="responseBox" class="response-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== 静态参数定义 ==========
+        const DEFAULT_MODEL = "deepseek-r1:8b";
+        const DEFAULT_SYSTEM_PROMPT = "你是一个有用的AI助手，请用中文回答用户的问题。";
+        const OLLAMA_API_URL = "http://localhost:11434";
+        
+        // ========== 全局变量 ==========
+        let selectedModel = DEFAULT_MODEL;
+        let isChatting = false;
+        
+        // ========== 工具函数 ==========
+        
+        /**
+         * 检查Ollama服务是否可用
+         */
+        async function checkOllamaConnection() {
+            try {
+                const response = await fetch(`${OLLAMA_API_URL}/api/tags`, {
+                    method: 'GET',
+                    timeout: 5000
+                });
+                return response.ok;
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        /**
+         * 获取可用的模型列表
+         */
+        async function getAvailableModels() {
+            try {
+                const response = await fetch(`${OLLAMA_API_URL}/api/tags`);
+                if (response.ok) {
+                    const data = await response.json();
+                    return data.models ? data.models.map(model => model.name) : [];
+                }
+                return [];
+            } catch (error) {
+                console.error(`获取模型列表失败: ${error.message}`);
+                return [];
+            }
+        }
+        
+        /**
+         * 与模型进行对话（流式输出）
+         */
+        async function chatWithModel(modelName, prompt, systemPrompt = null, onChunk = null) {
+            const url = `${OLLAMA_API_URL}/api/generate`;
+            
+            // 构建请求数据
+            const data = {
+                model: modelName,
+                prompt: prompt,
+                stream: true  // 启用流式输出
+            };
+            
+            // 添加系统提示（如果有）
+            if (systemPrompt) {
+                data.system = systemPrompt;
+            }
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    if (onChunk) onChunk(`请求失败，状态码: ${response.status}`);
+                    return `请求失败，状态码: ${response.status}`;
+                }
+                
+                // 获取可读流
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let responseText = '';
+                
+                try {
+                    // 读取流数据
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        
+                        if (done) break;
+                        
+                        // 解码数据块
+                        const chunk = decoder.decode(value, { stream: true });
+                        
+                        // 按行分割数据（JSON-LD格式）
+                        const lines = chunk.split('\n').filter(line => line.trim());
+                        
+                        for (const line of lines) {
+                            try {
+                                // 解析每一行的JSON数据
+                                const data = JSON.parse(line);
+                                if (data.response) {
+                                    responseText += data.response;
+                                    // 如果有回调函数，调用它来显示实时输出
+                                    if (onChunk) onChunk(responseText);
+                                }
+                            } catch (e) {
+                                console.warn('无法解析JSON行:', line);
+                            }
+                        }
+                    }
+                } finally {
+                    reader.releaseLock();
+                }
+                
+                return responseText || "模型没有返回有效回复";
+                
+            } catch (error) {
+                if (error.name === 'AbortError' || error.message.includes('timeout')) {
+                    if (onChunk) onChunk("请求超时，请检查模型是否正在运行");
+                    return "请求超时，请检查模型是否正在运行";
+                }
+                const errorMsg = `发生错误: ${error.message}`;
+                if (onChunk) onChunk(errorMsg);
+                return errorMsg;
+            }
+        }
+        
+        /**
+         * 显示状态信息
+         */
+        function showStatus(message, type = 'success') {
+            const statusContainer = document.getElementById('statusContainer');
+            const statusClass = type === 'error' ? 'status error' : 
+                               type === 'warning' ? 'status warning' : 'status success';
+            
+            statusContainer.innerHTML = `<div class="${statusClass}">${message}</div>`;
+        }
+        
+        /**
+         * 隐藏状态信息
+         */
+        function hideStatus() {
+            document.getElementById('statusContainer').innerHTML = '';
+        }
+        
+        /**
+         * 显示可用模型列表
+         */
+        function displayModelList(models) {
+            if (models.length === 0) return '';
+            
+            let html = '<div class="model-list">';
+            models.forEach((model, index) => {
+                html += `<div class="model-item">${index + 1}. ${model}</div>`;
+            });
+            html += '</div>';
+            return html;
+        }
+        
+        /**
+         * 初始化应用
+         */
+        async function initializeApp() {
+            console.log("=" + "=".repeat(49));
+            console.log("Ollama本地模型聊天工具");
+            console.log("=" + "=".repeat(49));
+            
+            // 检查Ollama服务
+            showStatus("正在检查Ollama服务...", 'info');
+            
+            const isConnected = await checkOllamaConnection();
+            
+            if (!isConnected) {
+                showStatus("❌ Ollama服务未启动或不可用<br>请先启动Ollama服务:<br>1. 打开命令行<br>2. 输入: ollama serve<br>3. 确保服务在 http://localhost:11434 运行", 'error');
+                return false;
+            }
+            
+            showStatus("✅ Ollama服务正常运行", 'success');
+            
+            // 使用默认模型
+            selectedModel = DEFAULT_MODEL;
+            document.getElementById('currentModel').textContent = selectedModel;
+            
+            // 检查默认模型是否可用
+            const models = await getAvailableModels();
+            
+            if (!models.includes(selectedModel)) {
+                let message = `⚠️ 默认模型 ${selectedModel} 未找到<br>`;
+                
+                if (models.length > 0) {
+                    message += "可用的模型:<br>" + displayModelList(models);
+                    message += `<br>请先下载默认模型: <code>ollama pull ${selectedModel}</code>`;
+                } else {
+                    message += "❌ 没有找到可用的模型<br>请先安装模型，例如:<br><code>ollama pull deepseek-r1:8b</code>";
+                }
+                
+                showStatus(message, 'warning');
+                return false;
+            }
+            
+            // 显示模型信息
+            document.getElementById('modelInfo').style.display = 'block';
+            showStatus(`✅ 已连接到模型: ${selectedModel}`, 'success');
+            
+            return true;
+        }
+        
+        /**
+         * 处理用户输入
+         */
+        async function handleUserInput() {
+            const userInput = document.getElementById('userInput').value.trim();
+            
+            if (!userInput) {
+                showStatus("⚠️ 输入不能为空，请重新输入", 'warning');
+                return;
+            }
+            
+            // 退出条件
+            if (userInput.toLowerCase() === 'quit' || 
+                userInput.toLowerCase() === '退出' || 
+                userInput.toLowerCase() === 'exit' || 
+                userInput.toLowerCase() === 'q') {
+                handleQuit();
+                return;
+            }
+            
+            if (isChatting) {
+                showStatus("⚠️ 正在等待模型回复，请稍候...", 'warning');
+                return;
+            }
+            
+            isChatting = true;
+            
+            // 清空输入框
+            document.getElementById('userInput').value = '';
+            
+            // 显示正在思考
+            const responseBox = document.getElementById('responseBox');
+            const responseContainer = document.getElementById('responseContainer');
+            responseContainer.style.display = 'block';
+            responseBox.textContent = '正在思考中...';
+            responseBox.className = 'response-box loading';
+            
+            // 流式输出回调函数
+            const onChunk = (text) => {
+                responseBox.textContent = text;
+                responseBox.className = 'response-box streaming'; // 添加流式输出样式
+            };
+            
+            // 发送请求并获取回复（流式输出）
+            const response = await chatWithModel(
+                selectedModel, 
+                userInput, 
+                DEFAULT_SYSTEM_PROMPT,
+                onChunk
+            );
+            
+            // 最终显示完整回复
+            responseBox.textContent = response;
+            responseBox.className = 'response-box'; // 移除流式输出样式
+            
+            isChatting = false;
+        }
+        
+        /**
+         * 处理退出
+         */
+        function handleQuit() {
+            showStatus("👋 再见！", 'success');
+            
+            // 禁用输入和按钮
+            document.getElementById('userInput').disabled = true;
+            document.getElementById('sendBtn').disabled = true;
+            
+            // 3秒后清空界面
+            setTimeout(() => {
+                document.getElementById('responseContainer').style.display = 'none';
+                hideStatus();
+                document.getElementById('modelInfo').style.display = 'none';
+            }, 3000);
+        }
+        
+        /**
+         * 绑定事件监听器
+         */
+        function bindEventListeners() {
+            // 发送按钮
+            document.getElementById('sendBtn').addEventListener('click', handleUserInput);
+            
+            // 回车键发送
+            document.getElementById('userInput').addEventListener('keypress', function(event) {
+                if (event.key === 'Enter') {
+                    handleUserInput();
+                }
+            });
+        }
+        
+        /**
+         * 主函数 - 页面加载完成后执行
+         */
+        async function main() {
+            // 绑定事件监听器
+            bindEventListeners();
+            
+            // 初始化应用
+            const isInitialized = await initializeApp();
+            
+            if (isInitialized) {
+                console.log("应用初始化成功，开始对话...");
+                document.getElementById('userInput').focus();
+            }
+        }
+        
+        // ========== 页面加载完成后执行主函数 ==========
+        document.addEventListener('DOMContentLoaded', main);
+        
+    </script>
+</body>
+</html>

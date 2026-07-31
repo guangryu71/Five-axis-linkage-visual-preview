@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/OBJLoader.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>五轴联动数控机床模拟系统</title>
+<head>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #container { display: flex; height: 100vh; }
+        #control-panel { width: 300px; padding: 20px; background: #f0f0f0; overflow-y: auto; }
+        #viewer { flex: 1; nodeIntegration: true }
+        .section { margin-bottom: 20px; }
+        h2 { margin-top: 0; }
+        button { padding: 8px 12px; background: #4CAF50; color: white; border: none; cursor: pointer; }
+        button:hover { background: #45a049; }
+        textarea { width: 100%; height: 100px; }
+        .axis-control { display: flex; margin-bottom: 10px; }
+        .axis-control label { width: 50px; }
+        .axis-control input { flex: 1; }
+        a{
+            /* 渐变 */
+            transition: all 1s,linear,0.5s;
+            transform: rotate(30deg);
+        }
+        a:hover{
+            /* 阴影 */
+            box-shadow: 5px 5px 5px 5px blue
+            /* 形状改变 */
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="control-panel">
+            <div class="section">
+                <h2>模型输入</h2>
+                <textarea id="gcode-input" placeholder="输入G代码或上传模型文件..."></textarea>
+                <div style="margin-top: 10px;">
+                    <button id="load-gcode">加载G代码</button>
+                    <input type="file" id="model-upload" accept=".stl,.obj,.gcode" style="display: none;">
+                    <button id="upload-btn">上传模型</button>
+                </div>
+            </div>
+            <div class="section">
+                <h2>机床控制</h2>
+                <div class="axis-control">
+                    <label>X轴:</label>
+                    <input type="range" id="x-axis" min="-100" max="100" value="0" step="1">
+                    <span id="x-value">0</span>
+                </div>
+                <div class="axis-control">
+                    <label>Y轴:</label>
+                    <input type="range" id="y-axis" min="-100" max="100" value="0" step="1">
+                    <span id="y-value">0</span>
+                </div>
+                <div class="axis-control">
+                    <label>Z轴:</label>
+                    <input type="range" id="z-axis" min="0" max="100" value="50" step="1">
+                    <span id="z-value">50</span>
+                </div>
+                <div class="axis-control">
+                    <label>A轴:</label>
+                    <input type="range" id="a-axis" min="-90" max="90" value="0" step="1">
+                    <span id="a-value">0°</span>
+                </div>
+                <div class="axis-control">
+                    <label>C轴:</label>
+                    <input type="range" id="c-axis" min="-90" max="90" value="0" step="1">
+                    <span id="c-value">0°</span>
+                </div>
+                <button id="reset-btn">复位</button>
+                <button id="run-btn">运行</button>
+            </div>
+            
+            <div class="section">
+                <h2>状态信息</h2>
+                <div id="status-info">
+                    <p>机床状态: 待机</p >
+                    <p>当前位置: X0 Y0 Z0 A0 C0</p >
+                </div>
+            </div>
+  <!-- 在HTML的控制面板部分添加 -->
+<div class="section">
+    <h2>速度控制</h2>
+    <div class="axis-control">
+        <label>速度:</label>
+        <input type="number" id="speed-factor" min="1" max="10" value="5" step="1">
+        <span>以5为基准</span>
+    </div>
+</div>
+<div class="section">
+    <h2>路径绘制</h2>
+    <div class="axis-control">
+        <button id="toggle-path">开始绘制</button>
+        <button id="clear-path">清除路径</button>
+    </div>
+    <div class="axis-control">
+        <label>颜料颜色:</label>
+        <input type="color" id="paint-color" value="#ff0000">
+    </div>
+    <div class="axis-control">
+        <label>路径模式:</label>
+        <select id="path-mode">
+            <option value="follow">跟随模型</option>
+            
+        </select>
+    </div>
+</div>
+        </div>
+        
+        <div id="viewer"></div>
+    </div>
+</body>
+<script>
+let scene, camera, renderer, controls;
+let machineGroup, tool, workpiece, axesHelper;
+let currentPosition = { x: 0, y: 0, z: 50, a: 0, c: 0 };
+let targetPosition = { x: 0, y: 0, z: 50, a: 0, c: 0 };
+let isRunning = false;
+let speedFactor =10;
+// 路径绘制相关变量
+let pathDrawing = false;
+let pathPoints = [];
+let pathLine = null;
+let paintEmitter = null;
+let pathFollowModel = true; // 路径是否跟随模型移动
+init();
+//流程函数
+function init() {
+    // 创建场景
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xeeeeee);
+
+    // 创建相机
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(150, 150, 150);
+    camera.lookAt(0, 50, 0);
+
+    // 创建渲染器
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(document.getElementById('viewer').clientWidth, document.getElementById('viewer').clientHeight);
+    document.getElementById('viewer').appendChild(renderer.domElement);
+
+    // 添加光源
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(100, 200, 100);
+    scene.add(directionalLight);
+
+    // 添加坐标系辅助
+    axesHelper = new THREE.AxesHelper(350);
+    scene.add(axesHelper);
+    
+    // 添加滑块事件监听器
+    setupEventListeners();
+
+    // 初始化轨道控制器
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // 创建机床模型
+    createMachine();
+    
+    // 创建颜料喷射器
+    createPaintEmitter();
+    
+    // 初始化目标位置
+    targetPosition = {...currentPosition};
+
+    // 启动渲染循环
+    animate()
+    window.addEventListener('resize', onWindowResize);
+}
+
+function loadModelFile(file) {
+    const reader = new FileReader();
+    const fileName = file.name.toLowerCase();
+    
+    reader.onload = function(event) {
+        if (!machineComponents) {
+            console.error("机床组件未初始化");
+            return;
+        }
+
+        // .stl模型
+        if (fileName.endsWith('.stl')) {
+            const loader = new THREE.STLLoader();
+            const geometry = loader.parse(event.target.result);
+            const material = new THREE.MeshPhongMaterial({ 
+                color: 0x6699ff, 
+                specular: 0x111111, 
+                shininess: 200 
+            });
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // 计算模型边界框和中心点
+            geometry.computeBoundingBox();
+            const boundingBox = geometry.boundingBox;
+            const modelCenter = new THREE.Vector3();
+            boundingBox.getCenter(modelCenter);
+            
+            // 清除旧模型
+            if (machineComponents.cAxis.children.length > 1) { // 保留工件平台
+                const toRemove = [];
+                machineComponents.cAxis.children.forEach(child => {
+                    if (child !== machineComponents.workpiece) {
+                        toRemove.push(child);
+                    }
+                });
+                toRemove.forEach(child => machineComponents.cAxis.remove(child));
+            }
+            
+            // 调整模型大小和位置，使模型中心与工作台中心对齐
+            // 工作台位置在y=62，所以我们设置模型底部略微高于工作台
+            mesh.position.set(
+                -modelCenter.x,  // X轴中心对齐
+                65,             // Y轴位置，略高于工作台
+                -modelCenter.z   // Z轴中心对齐
+            );
+            mesh.rotation.x = -Math.PI / 2;
+            machineComponents.cAxis.add(mesh);
+            
+        } else if (fileName.endsWith('.obj')) {
+            const loader = new THREE.OBJLoader();
+            const object = loader.parse(event.target.result);
+            
+            // 计算OBJ模型的边界框和中心点
+            const box = new THREE.Box3().setFromObject(object);
+            const objCenter = new THREE.Vector3();
+            box.getCenter(objCenter);
+            
+            // 清除旧模型
+            if (machineComponents.cAxis.children.length > 1) {
+                const toRemove = [];
+                machineComponents.cAxis.children.forEach(child => {
+                    if (child !== machineComponents.workpiece) {
+                        toRemove.push(child);
+                    }
+                });
+                toRemove.forEach(child => machineComponents.cAxis.remove(child));
+            }
+            
+            // 调整模型位置，使模型中心与工作台中心对齐
+            // 工作台位置在y=62，所以我们设置模型底部略微高于工作台
+            object.position.set(
+                -objCenter.x,  // X轴中心对齐
+                65,            // Y轴位置，略高于工作台
+                -objCenter.z   // Z轴中心对齐
+            );
+            object.rotation.x = -Math.PI / 2;
+            machineComponents.cAxis.add(object);
+        }
+    };
+    
+    if (fileName.endsWith('.gcode')) {
+        reader.readAsText(file);
+    } else {
+        reader.readAsArrayBuffer(file);
+    }
+}
+// 轴控制滑块(滑块事件监听)
+function setupEventListeners() {
+    document.getElementById('x-axis').addEventListener('input', (e) => {
+        currentPosition.x = parseFloat(e.target.value);
+        targetPosition.x = currentPosition.x;
+        document.getElementById('x-value').textContent = currentPosition.x;
+        updateMachinePosition();
+    });
+    
+    document.getElementById('y-axis').addEventListener('input', (e) => {
+        currentPosition.y = parseFloat(e.target.value);
+        targetPosition.y = currentPosition.y;
+        document.getElementById('y-value').textContent = currentPosition.y;
+        updateMachinePosition();
+    });
+    
+    document.getElementById('z-axis').addEventListener('input', (e) => {
+        currentPosition.z = parseFloat(e.target.value);
+        targetPosition.z = currentPosition.z;
+        document.getElementById('z-value').textContent = currentPosition.z;
+        updateMachinePosition();
+    });
+    
+    document.getElementById('a-axis').addEventListener('input', (e) => {
+        currentPosition.a = parseFloat(e.target.value);
+        targetPosition.a = currentPosition.a;
+        document.getElementById('a-value').textContent = currentPosition.a + '°';
+        updateMachinePosition();
+    });
+    
+    document.getElementById('c-axis').addEventListener('input', (e) => {
+        currentPosition.c = parseFloat(e.target.value);
+        targetPosition.c = currentPosition.c;
+        document.getElementById('c-value').textContent = currentPosition.c + '°';
+        updateMachinePosition();
+    });
+}
+// 机床更新
+function updateMachinePosition() {
+    if (!machineComponents) return;
+
+    // 更新工件系统
+    machineComponents.xSlider.position.x = currentPosition.x;  // X轴移动
+    machineComponents.ySlider.position.z = currentPosition.y; // Y轴移动
+    machineComponents.aAxis.rotation.x = THREE.MathUtils.degToRad(currentPosition.a); // A轴（aAxis及其所有对象）旋转
+    machineComponents.cAxis.rotation.z = THREE.MathUtils.degToRad(currentPosition.c); // C轴旋转
+    // 更新刀具系统
+    machineComponents.toolSystem.position.y = currentPosition.z; // Z轴移动
+
+    // 如果路径绘制功能开启，更新路径点
+    if (pathDrawing && paintEmitter) {
+        updatePath();
+    }
+    
+    // 更新颜料喷射器位置
+    if (paintEmitter) {
+        updatePaintEmitter();
+    }
+
+    // 更新状态显示
+    document.getElementById('status-info').innerHTML = `
+        <p>机床状态: ${isRunning ? '运行中' : '待机'}</p >
+        <p>当前位置: X${currentPosition.x.toFixed(2)} Y${currentPosition.y.toFixed(2)} Z${currentPosition.z.toFixed(2)} A${currentPosition.a.toFixed(2)}° C${currentPosition.c.toFixed(2)}°</p >
+    `;
+}
+
+// 实现相机鼠标控制和阻尼效果
+function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+}
+// 在DOM加载完成后初始化
+window.onload = function() {
+    // 添加窗口大小监听
+    window.addEventListener('resize', onWindowResize, false);
+
+    // 绑定按钮事件
+    document.getElementById('load-gcode').addEventListener('click', () => {
+        const gcode = document.getElementById('gcode-input').value;
+        if (gcode) parseGCode(gcode);
+    });
+
+    document.getElementById('upload-btn').addEventListener('click', () => {
+        document.getElementById('model-upload').click();
+    });
+
+    document.getElementById('model-upload').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) loadModelFile(file);
+    });
+
+    document.getElementById('run-btn').addEventListener('click', () => {
+        const gcode = document.getElementById('gcode-input').value;
+        if (gcode) parseGCode(gcode);
+    });
+
+    document.getElementById('reset-btn').addEventListener('click', resetMachine);
+    
+    // 绑定路径绘制控制按钮
+    document.getElementById('toggle-path').addEventListener('click', togglePathDrawing);
+    document.getElementById('clear-path').addEventListener('click', clearPath);
+
+    // 绑定滑块事件
+    // 修改滑块事件监听
+['x-axis', 'y-axis', 'z-axis', 'a-axis', 'c-axis'].forEach(id => {
+    document.getElementById(id).addEventListener('input', function() {
+        const axis = id.split('-')[0];
+        currentPosition[axis] = parseFloat(this.value); // 修改当前位置
+        targetPosition[axis] = currentPosition[axis]; // 同时更新目标位置
+        document.getElementById(`${axis}-value`).textContent = 
+            axis === 'a' || axis === 'c' ? `${this.value}°` : this.value;
+        updateMachinePosition();
+    });
+});
+    // 绑定速度控制
+    document.getElementById('speed-factor').addEventListener('input', function() {
+        speedFactor = parseFloat(this.value);
+    });
+};
+//窗口
+function onWindowResize() {
+    camera.aspect = document.getElementById('viewer').clientWidth / document.getElementById('viewer').clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(document.getElementById('viewer').clientWidth, document.getElementById('viewer').clientHeight);
+}
+// 机床模型
+function createMachine() {
+    // 创建基础父组（机器组）
+     const machineGroup = new THREE.Group();
+    scene.add(machineGroup);
+    
+    // 机床底座（固定）
+    const baseGeometry = new THREE.BoxGeometry(500, 20, 500);
+    const baseMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 });
+    const base = new THREE.Mesh(baseGeometry, baseMaterial);
+    base.position.y = -20;
+    machineGroup.add(base);
+
+    // 机床机械臂（固定）
+   const tall_0 = new THREE.BoxGeometry(250, 25, 30);
+    const tall_1 = new THREE.MeshPhongMaterial({ color: 0x333333});
+    const tall = new THREE.Mesh(tall_0, tall_1);
+    tall.position.x=-250;
+    tall.position.y=100;
+    tall.rotation.z=Math.PI/2
+    scene.add(tall);
+
+    // 机床机械臂（固定）
+   const tall1_0 = new THREE.BoxGeometry(250, 25, 30);
+    const tall1_1 = new THREE.MeshPhongMaterial({ color: 0x333333});
+    const tall1 = new THREE.Mesh(tall1_0, tall1_1);
+    tall1.position.x=250;
+    tall1.position.y=100;
+    tall1.rotation.z=Math.PI/2
+    scene.add(tall1);
+
+    // 机床机械臂（固定）
+   const tall2_0 = new THREE.BoxGeometry(520, 25, 30);
+    const tall2_1 = new THREE.MeshPhongMaterial({ color: 0x333333});
+    const tall2 = new THREE.Mesh(tall2_0, tall2_1);
+    tall2.position.set(0,235,0)
+    scene.add(tall2);
+
+    // 刀具系统（仅Z轴移动）
+    const toolSystem = new THREE.Group();
+    machineGroup.add(toolSystem);
+    
+    // Z轴立柱（上下移动）
+    const zAxisGeometry = new THREE.BoxGeometry(20, 160, 20);
+    const zAxisMaterial = new THREE.MeshPhongMaterial({ color: 0x777777 });
+    const zAxis = new THREE.Mesh(zAxisGeometry, zAxisMaterial);
+    zAxis.position.y = 170;
+    toolSystem.add(zAxis);
+
+    // 刀具（固定X/Y位置，仅Z轴移动）
+    const toolGeometry = new THREE.CylinderGeometry(1, 8, 20, 16);
+    const toolMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+    tool = new THREE.Mesh(toolGeometry, toolMaterial);
+    tool.position.set(0,80,0);
+    tool.rotation.z = Math.PI;
+    toolSystem.add(tool);
+
+    // 工件系统（包含X/Y/A/C轴）
+    const workpieceSystem = new THREE.Group();
+    machineGroup.add(workpieceSystem);
+
+    // X轴导轨（工件X方向移动）
+    const xAxisGeometry = new THREE.BoxGeometry(500, 10, 10);
+    const xAxisMaterial = new THREE.MeshPhongMaterial({ color: 0x555555 });
+    const xAxis = new THREE.Mesh(xAxisGeometry, xAxisMaterial);
+    xAxis.position.z = 0;
+    xAxis.position.y=-6;
+   scene.add(xAxis);
+
+    // X轴滑块（移动组）
+    const xSlider = new THREE.Group();
+    xSlider.position.x = currentPosition.x;
+    workpieceSystem.add(xSlider);
+
+    // Y轴导轨（工件Y方向移动）
+    const yAxisGeometry = new THREE.BoxGeometry(10, 10, 500);
+    const yAxisMaterial = new THREE.MeshPhongMaterial({ color: 0x666666 });
+    const yAxis = new THREE.Mesh(yAxisGeometry, yAxisMaterial);
+    yAxis.position.y = -6;
+    scene.add(yAxis);
+
+    // Y轴滑块（移动组）
+    const ySlider = new THREE.Group();
+    ySlider.position.z = currentPosition.y;
+    xSlider.add(ySlider);
+
+    // A轴旋转组
+    const aAxis = new THREE.Group();
+    aAxis.rotation.x = THREE.MathUtils.degToRad(currentPosition.a);
+    ySlider.add(aAxis);
+
+    // C轴旋转组
+    const cAxis = new THREE.Group();
+    cAxis.rotation.z = THREE.MathUtils.degToRad(currentPosition.c);
+    aAxis.add(cAxis);
+
+    // 工件平台(添加到c轴旋转组里面)
+    const workpieceGeometry = new THREE.BoxGeometry(150, 5,150);
+    const workpieceMaterial = new THREE.MeshPhongMaterial({ 
+        color: 0xaaaaaa, 
+        transparent: true, 
+        opacity: 0.8 
+    });
+    workpiece = new THREE.Mesh(workpieceGeometry, workpieceMaterial);
+    workpiece.position.y = 62;
+    cAxis.add(workpiece);
+
+    // 支撑底座
+    const foot = new THREE.CylinderGeometry(100, 30, 10, 25,1,false,0,Math.PI);
+    const foot_1 = new THREE.MeshPhongMaterial({ color: 0x333333});
+    const footer = new THREE.Mesh(foot, foot_1);
+    footer.position.x=150;
+    footer.position.y=-10;
+    footer.rotation.z=Math.PI/2
+    ySlider.add(footer);
+
+    // 支撑底座2
+    const foot2 = new THREE.CylinderGeometry(30, 100, 10, 25,1,false,0,Math.PI);
+    const foot2_1 = new THREE.MeshPhongMaterial({ color: 0x333333});
+    const footer2 = new THREE.Mesh(foot2, foot2_1);
+    footer2.position.x=-150
+    footer.position.y=-10;
+    footer2.rotation.z=Math.PI/2
+    ySlider.add(footer2);
+
+    // 支撑底座3
+    const foot3 = new THREE.BoxGeometry(290,5,100);
+    const foot3_1 = new THREE.MeshPhongMaterial({ color: 0x3043333});
+    const footer3 = new THREE.Mesh(foot3, foot3_1);
+    footer3.position.set(0,20,0)
+    aAxis.add(footer3);
+
+    // 支撑底座4
+    const foot4 = new THREE.BoxGeometry(290,5,250);
+    const foot4_1 = new THREE.MeshPhongMaterial({ color: 0x333333});
+    const footer4 = new THREE.Mesh(foot4, foot4_1);
+    footer3.position.y =35;
+    ySlider.add(footer4);
+
+    // 创建半圆柱几何体 {
+    const geometry = new THREE.CylinderGeometry(35, 35, 10, 32, 1, false, 0, Math.PI);
+    const material = new THREE.MeshBasicMaterial({ color:0x333333 });
+    const halfCylinder = new THREE.Mesh(geometry, material);
+    halfCylinder.position.y=30
+    halfCylinder.rotation.y=Math.PI/2
+    halfCylinder.rotation.z=Math.PI/2
+    aAxis.add(halfCylinder);
+
+    // 保存组件引用
+    machineComponents = {
+        workpiece,
+        toolSystem,
+        xSlider,
+        ySlider,
+        aAxis,
+        cAxis,
+    };
+}
+
+// G代码解析器
+function parseGCode(gcode) {
+    // 修改后的G代码解析逻辑
+    const lines = gcode.split('\n');
+    const commands = [];
+    
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(';')) continue;
+        
+        const parts = trimmed.split(/\s+/);
+        const command = {
+            type: parts[0].toUpperCase(),
+            params: {}
+        };
+        
+        for (let i = 1; i < parts.length; i++) {
+            const param = parts[i].toUpperCase();
+            const key = param[0];
+            const value = parseFloat(param.substring(1));
+            command.params[key] = value;
+        }
+        
+        commands.push(command);
+    }
+    
+    executeGCodeCommands(commands);
+}
+// 平滑动画
+function executeGCodeCommands(commands) {
+    isRunning = true;
+    updateMachinePosition();
+    
+    let i = 0;
+    const total = commands.length;
+    const delay = 100 / speedFactor; // 每个命令之间的延迟(毫秒)
+    const animationDuration = 500 / speedFactor; // 动画持续时间
+    
+    let startPosition = {...currentPosition};
+    let targetPosition = {...currentPosition};
+    
+    function processNextCommand() {
+        if (i >= total) {
+            isRunning = false;
+            updateMachinePosition();
+            return;
+        }
+        
+        const cmd = commands[i];
+        i++;
+        
+        // 保存当前位置作为动画起点
+        startPosition = {...currentPosition};
+        targetPosition = {...currentPosition};
+        
+        switch (cmd.type) {
+            case 'G0': // 快速移动
+            case 'G1': // 线性插补
+                if ('X' in cmd.params) targetPosition.x = cmd.params.X;
+                if ('Y' in cmd.params) targetPosition.y = cmd.params.Y;
+                if ('Z' in cmd.params) targetPosition.z = cmd.params.Z;
+                if ('A' in cmd.params) targetPosition.a = cmd.params.A;
+                if ('C' in cmd.params) targetPosition.c = cmd.params.C;
+                break;
+                
+            case 'G28': // 回零
+                targetPosition = { x: 0, y: 0, z: 50, a: 0, c: 0 };
+                break;
+        }
+        
+        // 开始动画
+        animateToPosition(startPosition, targetPosition, animationDuration, () => {
+            // 动画完成后处理下一个命令
+            setTimeout(processNextCommand, delay);
+        });
+    }
+    
+    processNextCommand();
+}
+// 修改后的复位函数
+function resetMachine() {
+    currentPosition = { x: 0, y: 0, z: 50, a: 0, c: 0 };
+    targetPosition = { ...currentPosition };
+    
+    // 更新滑块值
+    document.getElementById('x-axis').value = currentPosition.x;
+    document.getElementById('y-axis').value = currentPosition.y;
+    document.getElementById('z-axis').value = currentPosition.z;
+    document.getElementById('a-axis').value = currentPosition.a;
+    document.getElementById('c-axis').value = currentPosition.c;
+    
+    // 更新显示值
+    document.getElementById('x-value').textContent = currentPosition.x;
+    document.getElementById('y-value').textContent = currentPosition.y;
+    document.getElementById('z-value').textContent = currentPosition.z;
+    document.getElementById('a-value').textContent = currentPosition.a + '°';
+    document.getElementById('c-value').textContent = currentPosition.c + '°';
+    
+    updateMachinePosition();
+}
+// 平滑动画
+function animateToPosition(startPos, targetPos, duration, onComplete) {
+    const startTime = Date.now();
+    const endTime = startTime + duration;
+    
+    function updateAnimation() {
+        const now = Date.now();
+        const progress = Math.min(1, (now - startTime) / duration);
+        
+        // 线性插值
+        currentPosition.x = startPos.x + (targetPos.x - startPos.x) * progress;
+        currentPosition.y = startPos.y + (targetPos.y - startPos.y) * progress;
+        currentPosition.z = startPos.z + (targetPos.z - startPos.z) * progress;
+        currentPosition.a = startPos.a + (targetPos.a - startPos.a) * progress;
+        currentPosition.c = startPos.c + (targetPos.c - startPos.c) * progress;
+        
+        updateMachinePosition();
+        
+        // 更新滑块显示
+        // document.getElementById('x-axis').value = currentPosition.x;
+        // document.getElementById('y-axis').value = currentPosition.y;
+        // document.getElementById('z-axis').value = currentPosition.z;
+        // document.getElementById('a-axis').value = currentPosition.a;
+        // document.getElementById('c-axis').value = currentPosition.c;
+        
+        // document.getElementById('x-value').textContent = currentPosition.x.toFixed(2);
+        // document.getElementById('y-value').textContent = currentPosition.y.toFixed(2);
+        // document.getElementById('z-value').textContent = currentPosition.z.toFixed(2);
+        // document.getElementById('a-value').textContent = currentPosition.a.toFixed(2) + '°';
+        // document.getElementById('c-value').textContent = currentPosition.c.toFixed(2) + '°';
+        
+        if (now < endTime) {
+            requestAnimationFrame(updateAnimation);
+        } else {
+            // 确保最终位置准确
+            currentPosition = {...targetPos};
+            updateMachinePosition();
+            if (onComplete) onComplete();
+        }
+    }
+    
+    updateAnimation();
+}
+// 添加缓动函数
+function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+}
+
+// 创建颜料喷射器
+function createPaintEmitter() {
+    // 创建喷射器几何体
+    const emitterGeometry = new THREE.CylinderGeometry(1.5, 1.5, 15, 16);
+    const emitterMaterial = new THREE.MeshPhongMaterial({ 
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.7
+    });
+    paintEmitter = new THREE.Mesh(emitterGeometry, emitterMaterial);
+    paintEmitter.rotation.z = Math.PI; // 使喷射器朝下
+    paintEmitter.position.set(0, 80, 0); // 初始位置，位于刀具下方
+    machineComponents.toolSystem.add(paintEmitter);
+    
+    // 创建颜料射线指示器
+    const rayGeometry = new THREE.CylinderGeometry(0.5, 0.5, 60, 8);
+    const rayMaterial = new THREE.MeshBasicMaterial({ 
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.3
+    });
+    const ray = new THREE.Mesh(rayGeometry, rayMaterial);
+    ray.position.y = -37.5; // 相对于喷射器的位置
+    paintEmitter.add(ray);
+}
+
+// 更新颜料喷射器位置
+function updatePaintEmitter() {
+    if (!paintEmitter || !machineComponents) return;
+    
+    // 获取颜料颜色
+    const paintColor = document.getElementById('paint-color').value;
+    
+    // 更新喷射器和射线的颜色
+    paintEmitter.material.color.set(paintColor);
+    if (paintEmitter.children.length > 0) {
+        paintEmitter.children[0].material.color.set(paintColor);
+    }
+}
+
+// 切换路径绘制状态
+function togglePathDrawing() {
+    pathDrawing = !pathDrawing;
+    const btn = document.getElementById('toggle-path');
+    
+    if (pathDrawing) {
+        btn.textContent = '停止绘制';
+        btn.style.background = '#f44336';
+    } else {
+        btn.textContent = '开始绘制';
+        btn.style.background = '#4CAF50';
+    }
+}
+
+// 更新路径
+function updatePath() {
+    if (!pathDrawing || !machineComponents) return;
+    
+    // 获取路径模式选择
+    pathFollowModel = document.getElementById('path-mode').value === 'follow';
+    
+    // 获取当前刀具在全局坐标系中的位置
+    const toolWorldPosition = new THREE.Vector3();
+    tool.getWorldPosition(toolWorldPosition);
+    
+    // 计算颜料射到模型表面的点
+    // 创建一个从刀具位置向下的射线
+    const raycaster = new THREE.Raycaster();
+    const downwardDirection = new THREE.Vector3(0, -1, 0); // 向下方向
+    raycaster.set(toolWorldPosition, downwardDirection);
+    
+    // 检测射线与模型的交点
+    const intersects = raycaster.intersectObjects(machineComponents.cAxis.children, true);
+    
+    if (intersects.length > 0) {
+        // 取第一个交点（最接近射线起点的交点）
+        const intersectionPoint = intersects[0].point;
+        
+        let pointToAdd;
+        
+        // 根据路径模式选择坐标系
+        if (pathFollowModel) {
+            // 将交点转换为相对于C轴的局部坐标
+            pointToAdd = new THREE.Vector3();
+            machineComponents.cAxis.worldToLocal(pointToAdd.copy(intersectionPoint));
+        } else {
+            // 使用全局坐标
+            pointToAdd = intersectionPoint.clone();
+        }
+        
+        // 将交点添加到路径点数组
+        pathPoints.push(pointToAdd);
+        
+        // 如果路径点数量大于1，创建或更新路径线
+        if (pathPoints.length > 1) {
+            // 创建路径几何体
+            const pathGeometry = new THREE.BufferGeometry().setFromPoints(pathPoints);
+            const paintColor = document.getElementById('paint-color').value;
+            const pathMaterial = new THREE.LineBasicMaterial({ 
+                color: paintColor,
+                linewidth: 3
+            });
+            
+            // 移除旧路径线
+            if (pathLine) {
+                if (pathFollowModel) {
+                    machineComponents.cAxis.remove(pathLine);
+                } else {
+                    scene.remove(pathLine);
+                }
+            }
+            
+            // 创建新路径线
+            pathLine = new THREE.Line(pathGeometry, pathMaterial);
+            
+            // 根据模式添加到不同的父对象
+            if (pathFollowModel) {
+                // 跟随模型：添加到C轴，这样它会跟随模型移动
+                machineComponents.cAxis.add(pathLine);
+            } else {
+                // 固定坐标：添加到场景中，它不会跟随模型移动
+                scene.add(pathLine);
+            }
+        }
+    }
+}
+
+// 清除路径
+function clearPath() {
+    // 清除路径点数组
+    pathPoints = [];
+    
+    // 移除路径线
+    if (pathLine) {
+        if (pathFollowModel && machineComponents.cAxis) {
+            machineComponents.cAxis.remove(pathLine);
+        } else {
+            scene.remove(pathLine);
+        }
+        pathLine = null;
+    }
+}
+
+</script>
+</html>
